@@ -17,14 +17,22 @@ function sniffMagicBytes(buffer) {
   return null;
 }
 
-async function analyzeDocument(buffer, filename, docType) {
+async function analyzeDocument(buffer, filename, docType, password) {
   const form = new FormData();
   form.append("file", buffer, filename);
   form.append("docType", docType);
+  if (password) form.append("password", password);
 
   const resp = await fetch(`${FORENSICS_URL}/analyze`, { method: "POST", body: form });
   if (!resp.ok) {
-    throw new Error(`Forensics service error (${resp.status}): ${await resp.text()}`);
+    const body = await resp.json().catch(() => ({}));
+    const code = body?.detail?.error;
+    // password_required / invalid_password are expected, actionable states the
+    // caller needs to distinguish from a generic failure - never a bug to log.
+    const err = new Error(code || `Forensics service error (${resp.status})`);
+    err.code = code;
+    err.status = resp.status;
+    throw err;
   }
   return resp.json();
 }

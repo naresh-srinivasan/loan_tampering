@@ -113,7 +113,7 @@ router.post("/:id/documents", requireRole("APPL"), upload.single("file"), async 
   const app = loadApplicationOr404(req, res);
   if (!app) return;
 
-  const { docType } = req.body || {};
+  const { docType, password } = req.body || {};
   if (!req.file) return res.status(400).json({ error: "file is required" });
   if (!["BANK_STATEMENT", "PAYSLIP", "TAX_RETURN"].includes(docType)) {
     return res.status(400).json({ error: "docType must be BANK_STATEMENT, PAYSLIP or TAX_RETURN" });
@@ -127,7 +127,7 @@ router.post("/:id/documents", requireRole("APPL"), upload.single("file"), async 
   db.prepare("UPDATE applications SET status = 'PROCESSING', updatedAt = datetime('now') WHERE id = ?").run(app.id);
 
   try {
-    const analysis = await analyzeDocument(req.file.buffer, req.file.originalname, docType);
+    const analysis = await analyzeDocument(req.file.buffer, req.file.originalname, docType, password);
     const { forensicResult, financialAnalysis } = analysis;
 
     const storageKey = `${app.id}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
@@ -226,6 +226,11 @@ router.post("/:id/documents", requireRole("APPL"), upload.single("file"), async 
     res.status(201).json({ application: serializeApplication(updated), forensicResult, financialAnalysis, scoreResult });
   } catch (err) {
     db.prepare("UPDATE applications SET status = 'PENDING', updatedAt = datetime('now') WHERE id = ?").run(app.id);
+    if (err.code === "password_required" || err.code === "invalid_password") {
+      // Expected, actionable state - not an error to log. The password itself
+      // is never written anywhere (not the DB, not this log line).
+      return res.status(422).json({ error: err.code });
+    }
     console.error(err);
     res.status(502).json({ error: "Forensics/risk pipeline failed", detail: err.message });
   }

@@ -265,6 +265,8 @@ function SummaryCards({ application }: { application: Application }) {
 function UploadWidget({ applicationId, onUploaded }: { applicationId: number; onUploaded: () => void }) {
   const [docType, setDocType] = useState("BANK_STATEMENT");
   const [file, setFile] = useState<File | null>(null);
+  const [pdfPassword, setPdfPassword] = useState("");
+  const [needsPassword, setNeedsPassword] = useState<"required" | "invalid" | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -274,10 +276,15 @@ function UploadWidget({ applicationId, onUploaded }: { applicationId: number; on
     setBusy(true);
     setError(null);
     try {
-      await api.uploadDocument(applicationId, docType, file);
+      await api.uploadDocument(applicationId, docType, file, pdfPassword || undefined);
       onUploaded();
     } catch (err) {
-      setError((err as Error).message);
+      const code = (err as { code?: string }).code;
+      if (code === "password_required" || code === "invalid_password") {
+        setNeedsPassword(code === "invalid_password" ? "invalid" : "required");
+      } else {
+        setError((err as Error).message);
+      }
     } finally {
       setBusy(false);
     }
@@ -287,35 +294,56 @@ function UploadWidget({ applicationId, onUploaded }: { applicationId: number; on
     <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
       <h2 className="mb-1 font-semibold text-slate-900">Upload a supporting document</h2>
       <p className="mb-4 text-sm text-slate-500">We will review your bank statement and get back to you shortly.</p>
-      <form onSubmit={onSubmit} className="flex flex-wrap items-end gap-3">
-        <div>
-          <label className="mb-1 block text-xs font-medium text-slate-500">Document type</label>
-          <select
-            value={docType}
-            onChange={(e) => setDocType(e.target.value)}
-            className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+      <form onSubmit={onSubmit} className="space-y-3">
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-500">Document type</label>
+            <select
+              value={docType}
+              onChange={(e) => setDocType(e.target.value)}
+              className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            >
+              <option value="BANK_STATEMENT">Bank Statement</option>
+              <option value="PAYSLIP">Payslip</option>
+              <option value="TAX_RETURN">Tax Return</option>
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-500">File (PDF, JPG, PNG)</label>
+            <input
+              type="file"
+              accept=".pdf,.jpg,.jpeg,.png"
+              onChange={(e) => setFile(e.target.files?.[0] || null)}
+              className="text-sm"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={!file || busy}
+            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700 disabled:opacity-50"
           >
-            <option value="BANK_STATEMENT">Bank Statement</option>
-            <option value="PAYSLIP">Payslip</option>
-            <option value="TAX_RETURN">Tax Return</option>
-          </select>
+            {busy ? "Analyzing..." : needsPassword ? "Unlock & Submit" : "Upload & Submit"}
+          </button>
         </div>
-        <div>
-          <label className="mb-1 block text-xs font-medium text-slate-500">File (PDF, JPG, PNG)</label>
-          <input
-            type="file"
-            accept=".pdf,.jpg,.jpeg,.png"
-            onChange={(e) => setFile(e.target.files?.[0] || null)}
-            className="text-sm"
-          />
-        </div>
-        <button
-          type="submit"
-          disabled={!file || busy}
-          className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700 disabled:opacity-50"
-        >
-          {busy ? "Analyzing..." : "Upload & Submit"}
-        </button>
+
+        {needsPassword && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+            <p className="text-sm font-medium text-amber-800">
+              {needsPassword === "invalid" ? "That password didn't work - try again." : "This document is password protected."}
+            </p>
+            <p className="mt-1 text-xs text-amber-700">
+              Enter the password to unlock it - it is used once for this upload and is not stored.
+            </p>
+            <input
+              type="password"
+              autoFocus
+              value={pdfPassword}
+              onChange={(e) => setPdfPassword(e.target.value)}
+              placeholder="Document password"
+              className="mt-2 w-full rounded-lg border border-amber-300 px-3 py-2 text-sm focus:border-amber-500 focus:outline-none focus:ring-1 focus:ring-amber-500"
+            />
+          </div>
+        )}
       </form>
       {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
     </div>

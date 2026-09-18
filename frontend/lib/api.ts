@@ -81,7 +81,9 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const resp = await fetch(`${API_URL}${path}`, { ...options, headers });
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) {
-    throw new Error(data.error || `Request failed (${resp.status})`);
+    const err = new Error(data.error || `Request failed (${resp.status})`) as Error & { code?: string };
+    err.code = data.error;
+    throw err;
   }
   return data as T;
 }
@@ -112,10 +114,11 @@ export const api = {
       ledgerLineItems: LedgerLineItem[];
       auditLogs: AuditLog[];
     }>(`/api/applications/${id}`),
-  uploadDocument: (id: number | string, docType: string, file: File) => {
+  uploadDocument: (id: number | string, docType: string, file: File, password?: string) => {
     const form = new FormData();
     form.append("docType", docType);
     form.append("file", file);
+    if (password) form.append("password", password);
     return request<{ application: Application }>(`/api/applications/${id}/documents`, {
       method: "POST",
       body: form,

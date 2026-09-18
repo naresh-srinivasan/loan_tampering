@@ -16,11 +16,12 @@ from decimal import Decimal, InvalidOperation
 from datetime import datetime
 
 import cv2
-import fitz
 import numpy as np
 import pdfplumber
 import pytesseract
 from PIL import Image
+
+from .pdf_utils import is_pdf, open_fitz
 
 # On Windows, installing Tesseract doesn't reliably put it on PATH. Respect an
 # explicit override (TESSERACT_CMD env var), then fall back to the default
@@ -31,9 +32,6 @@ if os.environ.get("TESSERACT_CMD"):
     pytesseract.pytesseract.tesseract_cmd = os.environ["TESSERACT_CMD"]
 elif not shutil.which("tesseract") and os.path.exists(_DEFAULT_WINDOWS_TESSERACT):
     pytesseract.pytesseract.tesseract_cmd = _DEFAULT_WINDOWS_TESSERACT
-
-print(f"[ledger] pytesseract.tesseract_cmd resolved to: {pytesseract.pytesseract.tesseract_cmd!r}")
-print(f"[ledger] os.path.exists(that path): {os.path.exists(pytesseract.pytesseract.tesseract_cmd)}")
 
 DATE_PATTERN = r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2})"
 NUMBER_PATTERN = r"-?[\d,]+\.\d{2}"
@@ -63,9 +61,9 @@ def _parse_date(value: str):
     return value
 
 
-def _extract_rows_pdfplumber(pdf_bytes: bytes) -> list[dict]:
+def _extract_rows_pdfplumber(pdf_bytes: bytes, password: str | None = None) -> list[dict]:
     rows = []
-    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+    with pdfplumber.open(io.BytesIO(pdf_bytes), password=password or "") as pdf:
         for page in pdf.pages:
             for table in page.extract_tables():
                 if not table or len(table) < 2:
@@ -107,10 +105,9 @@ def _extract_rows_pdfplumber(pdf_bytes: bytes) -> list[dict]:
     return rows
 
 
-def _page_images(file_bytes: bytes, filename: str) -> list[Image.Image]:
-    lower = filename.lower()
-    if lower.endswith(".pdf") or file_bytes[:4] == b"%PDF":
-        doc = fitz.open(stream=file_bytes, filetype="pdf")
+def _page_images(file_bytes: bytes, filename: str, password: str | None = None) -> list[Image.Image]:
+    if is_pdf(file_bytes, filename):
+        doc = open_fitz(file_bytes, password)
         images = []
         for page in doc:
             pix = page.get_pixmap(dpi=300)
@@ -194,13 +191,13 @@ def _ocr_cell(img: Image.Image, numeric: bool = False) -> str:
     return pytesseract.image_to_string(img, config=config).strip()
 
 
-def _extract_rows_ocr(file_bytes: bytes, filename: str) -> list[dict]:
+def _extract_rows_ocr(file_bytes: bytes, filename: str, password: str | None = None) -> list[dict]:
     """OpenCV grid detection + per-cell Tesseract OCR fallback, used for scanned
     images and non-tabular PDFs. Reading each cell in isolation (rather than
     parsing flat OCR text) removes the ambiguity between Credit and Debit
     amounts that plain left-to-right token order cannot resolve."""
     rows = []
-    for img in _page_images(file_bytes, filename):
+    for img in _page_images(file_bytes, filename, password):
         grid = _detect_grid(img)
         if grid is None:
             continue
@@ -242,14 +239,13 @@ def _extract_rows_ocr(file_bytes: bytes, filename: str) -> list[dict]:
     return rows
 
 
-def extract_ledger(file_bytes: bytes, filename: str) -> tuple[list[dict], str]:
+def extract_ledger(file_bytes: bytes, filename: str, password: str | None = None) -> tuple[list[dict], str]:
     """Returns (rows, extraction_method)."""
-    is_pdf = filename.lower().endswith(".pdf") or file_bytes[:4] == b"%PDF"
-    if is_pdf:
-        rows = _extract_rows_pdfplumber(file_bytes)
+    if is_pdf(file_bytes, filename):
+        rows = _extract_rows_pdfplumber(file_bytes, password)
         if rows:
             return rows, "pdfplumber"
-    rows = _extract_rows_ocr(file_bytes, filename)
+    rows = _extract_rows_ocr(file_bytes, filename, password)
     return rows, "tesseract_ocr"
 
 
@@ -319,8 +315,8 @@ def reconcile_ledger(rows: list[dict]) -> dict:
     }
 
 
-def analyze_ledger(file_bytes: bytes, filename: str) -> dict:
-    rows, method = extract_ledger(file_bytes, filename)
+def analyze_ledger(file_bytes: bytes, filename: str, password: str | None = None) -> dict:
+    rows, method = extract_ledger(file_bytes, filename, password)
     result = reconcile_ledger(rows)
     result["extractionMethod"] = method
     return result

@@ -1,7 +1,8 @@
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from pydantic import BaseModel
 
 from . import forensics, ledger, risk
+from .pdf_utils import PdfPasswordError, is_pdf, open_fitz
 
 app = FastAPI(title="AI Loan Forensics & Risk Microservice")
 
@@ -12,15 +13,32 @@ def health():
 
 
 @app.post("/analyze")
-async def analyze(file: UploadFile = File(...), docType: str = Form("BANK_STATEMENT")):
+async def analyze(
+    file: UploadFile = File(...),
+    docType: str = Form("BANK_STATEMENT"),
+    password: str | None = Form(None),
+):
     file_bytes = await file.read()
     filename = file.filename or "upload"
 
-    forensic_result = forensics.analyze_document_forensics(file_bytes, filename)
+    # Validate the password once, upfront, in one place - real bank statements
+    # downloaded from net-banking are very often encrypted. The password is used
+    # only for this request (never written to disk or logged) and, once
+    # confirmed correct here, is trusted by every downstream call below.
+    if is_pdf(file_bytes, filename):
+        try:
+            open_fitz(file_bytes, password).close()
+        except PdfPasswordError as e:
+            raise HTTPException(
+                status_code=422,
+                detail={"error": "invalid_password" if e.wrong_password else "password_required"},
+            )
+
+    forensic_result = forensics.analyze_document_forensics(file_bytes, filename, password)
 
     financial_analysis = None
     if docType == "BANK_STATEMENT":
-        financial_analysis = ledger.analyze_ledger(file_bytes, filename)
+        financial_analysis = ledger.analyze_ledger(file_bytes, filename, password)
 
     return {
         "forensicResult": forensic_result,

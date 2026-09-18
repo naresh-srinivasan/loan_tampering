@@ -11,6 +11,8 @@ import fitz  # PyMuPDF
 import numpy as np
 from PIL import Image, ImageChops
 
+from .pdf_utils import is_pdf, open_fitz
+
 SUSPICIOUS_PRODUCERS = [
     "photoshop", "canva", "ilovepdf", "gimp", "smallpdf", "pdf editor",
     "sejda", "pdfescape", "snapedit",
@@ -22,11 +24,11 @@ TAMPER_SCORE_THRESHOLD = 35.0
 MAX_ERROR_THRESHOLD = 220
 
 
-def inspect_pdf_structure(pdf_bytes: bytes) -> dict:
+def inspect_pdf_structure(pdf_bytes: bytes, password: str | None = None) -> dict:
     """Walk PDF metadata and font resource dictionaries for editing-tool fingerprints
     and font-family inconsistencies across pages (a signal of spliced numbers)."""
     anomalies = []
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    doc = open_fitz(pdf_bytes, password)
     meta = doc.metadata or {}
 
     producer = (meta.get("producer") or "").lower()
@@ -66,11 +68,10 @@ def inspect_pdf_structure(pdf_bytes: bytes) -> dict:
     }
 
 
-def _load_first_page_image(file_bytes: bytes, filename: str) -> Image.Image:
+def _load_first_page_image(file_bytes: bytes, filename: str, password: str | None = None) -> Image.Image:
     """Rasterize the first page (PDF) or open directly (image) as an RGB PIL image."""
-    lower = filename.lower()
-    if lower.endswith(".pdf") or file_bytes[:4] == b"%PDF":
-        doc = fitz.open(stream=file_bytes, filetype="pdf")
+    if is_pdf(file_bytes, filename):
+        doc = open_fitz(file_bytes, password)
         page = doc[0]
         pix = page.get_pixmap(dpi=150)
         img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
@@ -83,7 +84,7 @@ BLOCK_SIZE = 24
 LOCAL_OUTLIER_THRESHOLD = 6.0  # (max block error - median block error) / MAD
 
 
-def run_error_level_analysis(file_bytes: bytes, filename: str) -> dict:
+def run_error_level_analysis(file_bytes: bytes, filename: str, password: str | None = None) -> dict:
     """
     ELA(x, y) = S * |I(x,y) - J(I(x,y), Q)|
     tamper_score = [std_error / (mean_error + 1e-5)] * 10.0  (report's whole-image formula,
@@ -97,7 +98,7 @@ def run_error_level_analysis(file_bytes: bytes, filename: str) -> dict:
     tampering when the worst block deviates sharply (robust z-score via MAD) from the
     page's own typical block error - the same signal the heatmap visualizes.
     """
-    original = _load_first_page_image(file_bytes, filename)
+    original = _load_first_page_image(file_bytes, filename, password)
 
     buf = io.BytesIO()
     original.save(buf, "JPEG", quality=ELA_QUALITY)
@@ -148,7 +149,7 @@ def run_error_level_analysis(file_bytes: bytes, filename: str) -> dict:
     }
 
 
-def analyze_document_forensics(file_bytes: bytes, filename: str) -> dict:
+def analyze_document_forensics(file_bytes: bytes, filename: str, password: str | None = None) -> dict:
     """
     Combines two independent forensic signals:
       1. Structural metadata/font inspection - fully deterministic, zero false-positive
@@ -169,12 +170,11 @@ def analyze_document_forensics(file_bytes: bytes, filename: str) -> dict:
     anomalies = []
     structure: Optional[dict] = None
 
-    is_pdf = filename.lower().endswith(".pdf") or file_bytes[:4] == b"%PDF"
-    if is_pdf:
-        structure = inspect_pdf_structure(file_bytes)
+    if is_pdf(file_bytes, filename):
+        structure = inspect_pdf_structure(file_bytes, password)
         anomalies.extend(structure["anomalies"])
 
-    ela = run_error_level_analysis(file_bytes, filename)
+    ela = run_error_level_analysis(file_bytes, filename, password)
 
     is_tampered = bool(structure and structure["anomalies"])
     confidence = max(ela["confidence"], 70.0) if is_tampered else ela["confidence"]

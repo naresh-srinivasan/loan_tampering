@@ -120,6 +120,23 @@ exercise all three underwriting outcomes:
 | `sample_tampered.pdf` | One balance cell altered, breaking the running-balance reconciliation | `MANUAL_REVIEW` (caught by deterministic ledger math) |
 | `sample_photoshopped.pdf` | Numbers are consistent, but `/Producer` metadata says "Adobe Photoshop" | `REJECT_FRAUD_ALERT` (caught by structural PDF inspection) |
 
+## Password-protected PDFs
+
+Real bank statements downloaded from net-banking portals are very often encrypted
+(commonly with the account number, DOB or PAN as the password). Uploading one prompts
+for a password inline (both in the combined apply-and-upload form and the detail page's
+retry uploader) rather than failing outright. The password is used once for that request
+only - it is never written to disk, the database, or a log line. To test this path,
+encrypt any sample PDF, e.g.:
+
+```bash
+.venv/bin/python -c "
+import fitz
+doc = fitz.open('sample_docs/sample_clean.pdf')
+doc.save('/tmp/encrypted.pdf', encryption=fitz.PDF_ENCRYPT_AES_256, user_pw='test123')
+"
+```
+
 ## Smoke tests
 
 Playwright browser smoke tests exercise the full applicant and officer flows against
