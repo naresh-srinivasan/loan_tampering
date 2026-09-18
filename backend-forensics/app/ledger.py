@@ -32,6 +32,9 @@ if os.environ.get("TESSERACT_CMD"):
 elif not shutil.which("tesseract") and os.path.exists(_DEFAULT_WINDOWS_TESSERACT):
     pytesseract.pytesseract.tesseract_cmd = _DEFAULT_WINDOWS_TESSERACT
 
+print(f"[ledger] pytesseract.tesseract_cmd resolved to: {pytesseract.pytesseract.tesseract_cmd!r}")
+print(f"[ledger] os.path.exists(that path): {os.path.exists(pytesseract.pytesseract.tesseract_cmd)}")
+
 DATE_PATTERN = r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2})"
 NUMBER_PATTERN = r"-?[\d,]+\.\d{2}"
 
