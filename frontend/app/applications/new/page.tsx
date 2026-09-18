@@ -15,6 +15,8 @@ export default function NewApplicationPage() {
     existingMonthlyDebt: "",
     numDependents: "0",
   });
+  const [docType, setDocType] = useState("BANK_STATEMENT");
+  const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -24,6 +26,10 @@ export default function NewApplicationPage() {
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!file) {
+      setError("Please attach a supporting document.");
+      return;
+    }
     setError(null);
     setSubmitting(true);
     try {
@@ -36,7 +42,17 @@ export default function NewApplicationPage() {
         existingMonthlyDebt: Number(form.existingMonthlyDebt || 0),
         numDependents: Number(form.numDependents || 0),
       });
-      router.push(`/applications/${application.id}`);
+      // The application record and its document are created in two calls under
+      // the hood, but the applicant experiences this as one submission - if the
+      // upload step fails, the application still exists (in PENDING) and they
+      // can retry the upload from its detail page rather than losing everything.
+      try {
+        await api.uploadDocument(application.id, docType, file);
+      } catch {
+        router.push(`/applications/${application.id}`);
+        return;
+      }
+      router.push("/applications?submitted=1");
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -50,7 +66,9 @@ export default function NewApplicationPage() {
   return (
     <div className="mx-auto max-w-lg">
       <h1 className="mb-1 text-2xl font-semibold text-slate-900">New Loan Application</h1>
-      <p className="mb-6 text-sm text-slate-500">Tell us a bit about the loan you are applying for.</p>
+      <p className="mb-6 text-sm text-slate-500">
+        Fill in your loan details and attach a supporting document - we will review both together.
+      </p>
       <div className="rounded-xl border border-slate-200 bg-white p-8 shadow-sm">
         <form onSubmit={onSubmit} className="space-y-4">
           <Field label="Loan amount requested (₹)">
@@ -75,6 +93,26 @@ export default function NewApplicationPage() {
             <input type="number" min={0} value={form.numDependents} onChange={set("numDependents")} className={inputClass} />
           </Field>
 
+          <div className="border-t border-slate-100 pt-4">
+            <Field label="Document type">
+              <select value={docType} onChange={(e) => setDocType(e.target.value)} className={inputClass}>
+                <option value="BANK_STATEMENT">Bank Statement</option>
+                <option value="PAYSLIP">Payslip</option>
+                <option value="TAX_RETURN">Tax Return</option>
+              </select>
+            </Field>
+            <div className="mt-4">
+              <label className="mb-1 block text-sm font-medium text-slate-600">Supporting document (PDF, JPG, PNG)</label>
+              <input
+                type="file"
+                required
+                accept=".pdf,.jpg,.jpeg,.png"
+                onChange={(e) => setFile(e.target.files?.[0] || null)}
+                className="text-sm"
+              />
+            </div>
+          </div>
+
           {error && <p className="text-sm text-red-600">{error}</p>}
 
           <button
@@ -82,7 +120,7 @@ export default function NewApplicationPage() {
             disabled={submitting}
             className="w-full rounded-lg bg-indigo-600 py-2.5 font-medium text-white transition-colors hover:bg-indigo-700 disabled:opacity-50"
           >
-            {submitting ? "Creating..." : "Create Application"}
+            {submitting ? "Submitting..." : "Submit Application"}
           </button>
         </form>
       </div>

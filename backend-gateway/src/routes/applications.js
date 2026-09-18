@@ -179,10 +179,15 @@ router.post("/:id/documents", requireRole("APPL"), upload.single("file"), async 
       isMathConsistent,
     });
 
+    // AUTO_APPROVE is a *recommendation*, not a final decision - a human still
+    // confirms it (as a one-click "Confirm" rather than a full manual review,
+    // since the deterministic checks already passed). Only a fraud/hard-reject
+    // verdict is final without a human, since there's no approval to protect
+    // against there.
     const newStatus =
-      scoreResult.recommendation === "AUTO_APPROVE" ? "PRE_APPROVED" :
-      scoreResult.recommendation === "REJECT" || scoreResult.recommendation === "REJECT_FRAUD_ALERT" ? "REJECTED" :
-      "UNDER_REVIEW";
+      scoreResult.recommendation === "REJECT" || scoreResult.recommendation === "REJECT_FRAUD_ALERT"
+        ? "REJECTED"
+        : "UNDER_REVIEW";
 
     db.prepare(
       `UPDATE applications SET

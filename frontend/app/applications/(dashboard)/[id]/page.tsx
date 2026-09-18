@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 import { api, Application, DocumentRecord, LedgerLineItem, AuditLog, fileUrlWithAuth } from "@/lib/api";
 import { StatusBadge, RecommendationBadge, RiskBadge } from "@/components/badges";
+import { notifyApplicationsChanged } from "@/components/applications-sidebar";
 
 interface Detail {
   application: Application;
@@ -27,6 +28,7 @@ export default function ApplicationDetailPage() {
       .then((d) => {
         setDetail(d);
         setActiveDocId((prev) => prev ?? d.documents[0]?.id ?? null);
+        notifyApplicationsChanged();
       })
       .catch((e) => setError(e.message));
   }, [id]);
@@ -82,7 +84,12 @@ export default function ApplicationDetailPage() {
         </>
       )}
 
-      <DecisionPanel applicationId={application.id} status={application.status} onDecided={refresh} />
+      <DecisionPanel
+        applicationId={application.id}
+        status={application.status}
+        recommendation={application.recommendation}
+        onDecided={refresh}
+      />
 
       <AuditTrail logs={auditLogs} />
     </div>
@@ -413,15 +420,18 @@ function LedgerTable({ items }: { items: LedgerLineItem[] }) {
 function DecisionPanel({
   applicationId,
   status,
+  recommendation,
   onDecided,
 }: {
   applicationId: number;
   status: string;
+  recommendation: string | null;
   onDecided: () => void;
 }) {
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showFullPanel, setShowFullPanel] = useState(false);
 
   async function decide(action: string) {
     setBusy(true);
@@ -445,9 +455,20 @@ function DecisionPanel({
     );
   }
 
-  return (
-    <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-      <h2 className="mb-3 font-semibold text-slate-900">Underwriter Decision</h2>
+  if (status === "PRE_APPROVED" || status === "REJECTED") {
+    return (
+      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+        <h2 className="font-semibold text-slate-900">Decision recorded</h2>
+        <p className="mt-1 text-sm text-slate-500">
+          This application is {status === "PRE_APPROVED" ? "approved" : "rejected"} - see the audit trail below for
+          who decided and when.
+        </p>
+      </div>
+    );
+  }
+
+  const fullPanel = (
+    <>
       <textarea
         value={notes}
         onChange={(e) => setNotes(e.target.value)}
@@ -479,6 +500,43 @@ function DecisionPanel({
         </button>
       </div>
       {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
+    </>
+  );
+
+  // The system already ran every deterministic check (forensics, ledger math,
+  // credit score) and came back clean - a human still confirms it (so every
+  // approval has someone accountable for it), but doesn't need to redo the
+  // review from scratch. Manual review / ambiguous cases skip straight to the
+  // full panel, since those genuinely need a judgment call.
+  if (recommendation === "AUTO_APPROVE" && !showFullPanel) {
+    return (
+      <div className="rounded-xl border border-green-200 bg-green-50 p-5 shadow-sm">
+        <h2 className="font-semibold text-green-800">System check passed</h2>
+        <p className="mt-1 text-sm text-green-700">
+          Forensics, ledger reconciliation and credit scoring all cleared this application automatically. Confirm to
+          finalize the approval.
+        </p>
+        <div className="mt-3 flex items-center gap-3">
+          <button
+            onClick={() => decide("APPROVE")}
+            disabled={busy}
+            className="rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-green-700 disabled:opacity-50"
+          >
+            {busy ? "Confirming..." : "Confirm & Approve"}
+          </button>
+          <button onClick={() => setShowFullPanel(true)} className="text-sm font-medium text-green-800 hover:underline">
+            Review manually instead
+          </button>
+        </div>
+        {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <h2 className="mb-3 font-semibold text-slate-900">Underwriter Decision</h2>
+      {fullPanel}
     </div>
   );
 }
