@@ -1,0 +1,14 @@
+node_modules/
+.next/
+*.pyc
+__pycache__/
+.venv/
+venv/
+backend-gateway/data/*.db
+backend-gateway/data/*.db-shm
+backend-gateway/data/*.db-wal
+backend-gateway/uploads/*
+!backend-gateway/uploads/.gitkeep
+backend-forensics/models/*.joblib
+.env
+.DS_Store
