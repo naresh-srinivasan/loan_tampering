@@ -44,46 +44,48 @@ export default function NewApplicationPage() {
     }
   }
 
+  const inputClass =
+    "w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500";
+
   return (
-    <div className="max-w-lg mx-auto bg-white p-8 rounded-lg border border-slate-200">
-      <h1 className="text-xl font-semibold mb-6">New Loan Application</h1>
-      <form onSubmit={onSubmit} className="space-y-4">
-        <Field label="Loan amount requested (₹)">
-          <input type="number" required min={1} value={form.loanAmount} onChange={set("loanAmount")} className="input" />
-        </Field>
-        <Field label="Tenure (months)">
-          <input type="number" required min={1} value={form.tenureMonths} onChange={set("tenureMonths")} className="input" />
-        </Field>
-        <Field label="Loan purpose">
-          <input value={form.loanPurpose} onChange={set("loanPurpose")} className="input" placeholder="e.g. Home renovation" />
-        </Field>
-        <Field label="Your age">
-          <input type="number" required min={18} max={100} value={form.age} onChange={set("age")} className="input" />
-        </Field>
-        <Field label="Stated monthly income (₹)">
-          <input type="number" required min={0} value={form.statedMonthlyIncome} onChange={set("statedMonthlyIncome")} className="input" />
-        </Field>
-        <Field label="Existing monthly debt obligations (₹)">
-          <input type="number" min={0} value={form.existingMonthlyDebt} onChange={set("existingMonthlyDebt")} className="input" />
-        </Field>
-        <Field label="Number of dependents">
-          <input type="number" min={0} value={form.numDependents} onChange={set("numDependents")} className="input" />
-        </Field>
+    <div className="mx-auto max-w-lg">
+      <h1 className="mb-1 text-2xl font-semibold text-slate-900">New Loan Application</h1>
+      <p className="mb-6 text-sm text-slate-500">Tell us a bit about the loan you are applying for.</p>
+      <div className="rounded-xl border border-slate-200 bg-white p-8 shadow-sm">
+        <form onSubmit={onSubmit} className="space-y-4">
+          <Field label="Loan amount requested (₹)">
+            <input type="number" required min={1} value={form.loanAmount} onChange={set("loanAmount")} className={inputClass} />
+          </Field>
+          <Field label="Tenure (months)">
+            <input type="number" required min={1} value={form.tenureMonths} onChange={set("tenureMonths")} className={inputClass} />
+          </Field>
+          <Field label="Loan purpose">
+            <input value={form.loanPurpose} onChange={set("loanPurpose")} className={inputClass} placeholder="e.g. Home renovation" />
+          </Field>
+          <Field label="Your age">
+            <input type="number" required min={18} max={100} value={form.age} onChange={set("age")} className={inputClass} />
+          </Field>
+          <Field label="Stated monthly income (₹)">
+            <input type="number" required min={0} value={form.statedMonthlyIncome} onChange={set("statedMonthlyIncome")} className={inputClass} />
+          </Field>
+          <Field label="Existing monthly debt obligations (₹)">
+            <input type="number" min={0} value={form.existingMonthlyDebt} onChange={set("existingMonthlyDebt")} className={inputClass} />
+          </Field>
+          <Field label="Number of dependents">
+            <input type="number" min={0} value={form.numDependents} onChange={set("numDependents")} className={inputClass} />
+          </Field>
 
-        {error && <p className="text-sm text-red-600">{error}</p>}
+          {error && <p className="text-sm text-red-600">{error}</p>}
 
-        <button type="submit" disabled={submitting} className="w-full bg-blue-600 text-white rounded py-2 font-medium disabled:opacity-50">
-          {submitting ? "Creating..." : "Create Application"}
-        </button>
-      </form>
-      <style jsx global>{`
-        .input {
-          width: 100%;
-          border: 1px solid rgb(203 213 225);
-          border-radius: 0.375rem;
-          padding: 0.5rem 0.75rem;
-        }
-      `}</style>
+          <button
+            type="submit"
+            disabled={submitting}
+            className="w-full rounded-lg bg-indigo-600 py-2.5 font-medium text-white transition-colors hover:bg-indigo-700 disabled:opacity-50"
+          >
+            {submitting ? "Creating..." : "Create Application"}
+          </button>
+        </form>
+      </div>
     </div>
   );
 }
@@ -91,7 +93,7 @@ export default function NewApplicationPage() {
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <label className="block text-sm text-slate-600 mb-1">{label}</label>
+      <label className="mb-1 block text-sm font-medium text-slate-600">{label}</label>
       {children}
     </div>
   );

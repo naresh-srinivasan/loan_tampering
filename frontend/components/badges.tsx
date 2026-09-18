@@ -8,7 +8,7 @@ const STATUS_STYLES: Record<string, string> = {
 
 export function StatusBadge({ status }: { status: string }) {
   return (
-    <span className={`px-2 py-0.5 rounded text-xs font-medium ${STATUS_STYLES[status] || "bg-slate-100 text-slate-600"}`}>
+    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${STATUS_STYLES[status] || "bg-slate-100 text-slate-600"}`}>
       {status.replace("_", " ")}
     </span>
   );
@@ -22,9 +22,9 @@ const RECOMMENDATION_STYLES: Record<string, string> = {
 };
 
 export function RecommendationBadge({ recommendation }: { recommendation: string | null }) {
-  if (!recommendation) return <span className="text-slate-400 text-xs">Not yet analyzed</span>;
+  if (!recommendation) return <span className="text-xs text-slate-400">Not yet analyzed</span>;
   return (
-    <span className={`px-2 py-0.5 rounded text-xs font-medium ${RECOMMENDATION_STYLES[recommendation] || "bg-slate-100"}`}>
+    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${RECOMMENDATION_STYLES[recommendation] || "bg-slate-100"}`}>
       {recommendation.replace(/_/g, " ")}
     </span>
   );
@@ -39,7 +39,7 @@ const RISK_STYLES: Record<string, string> = {
 export function RiskBadge({ band }: { band: string | null }) {
   if (!band) return null;
   return (
-    <span className={`px-2 py-0.5 rounded text-xs font-medium ${RISK_STYLES[band] || "bg-slate-100"}`}>
+    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${RISK_STYLES[band] || "bg-slate-100"}`}>
       {band} risk
     </span>
   );

@@ -41,65 +41,188 @@ export default function ApplicationDetailPage() {
   }, [loading, user, router, refresh]);
 
   if (loading || !user) return null;
-  if (error) return <p className="text-red-600 text-sm">{error}</p>;
-  if (!detail) return <p className="text-slate-500 text-sm">Loading...</p>;
+  if (error) return <p className="text-sm text-red-600">{error}</p>;
+  if (!detail) return <p className="text-sm text-slate-500">Loading...</p>;
 
   const { application, documents, ledgerLineItems, auditLogs } = detail;
-  const activeDoc = documents.find((d) => d.id === activeDocId) || documents[0];
-  const canUpload = user.role === "APPL" && documents.length === 0;
   const isOfficer = user.role === "OFF" || user.role === "ADM";
+
+  if (!isOfficer) {
+    return <ApplicantView application={application} documents={documents} onUploaded={refresh} />;
+  }
+
+  const activeDoc = documents.find((d) => d.id === activeDocId) || documents[0];
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold">Application #{application.id}</h1>
-          <p className="text-sm text-slate-500">
-            ₹{application.loanAmount.toLocaleString()} over {application.tenureMonths} months
-            {application.loanPurpose ? ` · ${application.loanPurpose}` : ""}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <StatusBadge status={application.status} />
-          <RiskBadge band={application.riskBand} />
-          <RecommendationBadge recommendation={application.recommendation} />
-        </div>
-      </div>
+      <PageHeader application={application} />
 
       <SummaryCards application={application} />
 
-      {canUpload && <UploadWidget applicationId={application.id} onUploaded={refresh} />}
+      {application.anomaliesDetected.length > 0 && (
+        <div className="rounded-xl border border-red-200 bg-red-50 p-5 shadow-sm">
+          <h2 className="mb-2 font-semibold text-red-800">Forensic anomalies detected</h2>
+          <ul className="list-inside list-disc space-y-1 text-sm text-red-700">
+            {application.anomaliesDetected.map((a, i) => (
+              <li key={i}>{a}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {documents.length > 0 && (
         <>
-          {application.anomaliesDetected.length > 0 && (
-            <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-              <h2 className="font-medium text-red-800 mb-2">Forensic anomalies detected</h2>
-              <ul className="list-disc list-inside text-sm text-red-700 space-y-1">
-                {application.anomaliesDetected.map((a, i) => (
-                  <li key={i}>{a}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-
           <SplitScreenViewer
             applicationId={application.id}
             documents={documents}
             activeDoc={activeDoc}
             onSelect={setActiveDocId}
           />
-
           <LedgerTable items={ledgerLineItems} />
         </>
       )}
 
-      {isOfficer && <DecisionPanel applicationId={application.id} status={application.status} onDecided={refresh} />}
+      <DecisionPanel applicationId={application.id} status={application.status} onDecided={refresh} />
 
       <AuditTrail logs={auditLogs} />
     </div>
   );
 }
+
+function PageHeader({ application, showAnalysisBadges = true }: { application: Application; showAnalysisBadges?: boolean }) {
+  return (
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <h1 className="text-2xl font-semibold text-slate-900">Application #{application.id}</h1>
+        <p className="mt-1 text-sm text-slate-500">
+          ₹{application.loanAmount.toLocaleString()} over {application.tenureMonths} months
+          {application.loanPurpose ? ` · ${application.loanPurpose}` : ""}
+        </p>
+      </div>
+      <div className="flex items-center gap-2">
+        <StatusBadge status={application.status} />
+        {showAnalysisBadges && (
+          <>
+            <RiskBadge band={application.riskBand} />
+            <RecommendationBadge recommendation={application.recommendation} />
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Applicant view: status + upload only. No score, no tamper flags, no
+// heatmap, no ledger breakdown - an applicant has no business (and no need)
+// seeing the internals of how the fraud checks work, only the outcome.
+// ---------------------------------------------------------------------------
+
+function applicantStepIndex(status: string): number {
+  if (status === "PENDING") return 0;
+  if (status === "PROCESSING") return 1;
+  if (status === "UNDER_REVIEW") return 2;
+  return 3; // PRE_APPROVED or REJECTED
+}
+
+function ApplicantView({
+  application,
+  documents,
+  onUploaded,
+}: {
+  application: Application;
+  documents: DocumentRecord[];
+  onUploaded: () => void;
+}) {
+  const canUpload = documents.length === 0;
+  const currentStep = applicantStepIndex(application.status);
+
+  return (
+    <div className="space-y-6">
+      <PageHeader application={application} showAnalysisBadges={false} />
+
+      <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+        <ApplicantTimeline currentStep={currentStep} status={application.status} />
+      </div>
+
+      {canUpload && <UploadWidget applicationId={application.id} onUploaded={onUploaded} />}
+
+      {!canUpload && application.status !== "PRE_APPROVED" && application.status !== "REJECTED" && (
+        <div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-600 shadow-sm">
+          Your document has been submitted and is being reviewed. This page will update automatically
+          once a decision is made - check back shortly.
+        </div>
+      )}
+
+      {application.status === "PRE_APPROVED" && (
+        <OutcomeCard
+          tone="success"
+          title="Your application has been approved"
+          body="A loan officer has confirmed your documents and financial details meet our requirements. You will be contacted with next steps."
+        />
+      )}
+
+      {application.status === "REJECTED" && (
+        <OutcomeCard
+          tone="danger"
+          title="Your application was not approved"
+          body="Based on the information and documents provided, we're unable to approve this application at this time."
+        />
+      )}
+    </div>
+  );
+}
+
+function ApplicantTimeline({ currentStep, status }: { currentStep: number; status: string }) {
+  const labels = ["Submitted", "Analyzing documents", "Under review", status === "REJECTED" ? "Rejected" : "Decision"];
+  return (
+    <div className="flex items-center">
+      {labels.map((label, i) => {
+        const active = i <= currentStep;
+        const isLast = i === labels.length - 1;
+        const isRejected = isLast && status === "REJECTED";
+        return (
+          <div key={label} className="flex flex-1 items-center last:flex-none">
+            <div className="flex flex-col items-center gap-2">
+              <div
+                className={`flex h-8 w-8 items-center justify-center rounded-full text-sm font-semibold transition-colors ${
+                  isRejected && active
+                    ? "bg-red-600 text-white"
+                    : active
+                    ? "bg-indigo-600 text-white"
+                    : "bg-slate-100 text-slate-400"
+                }`}
+              >
+                {active ? "✓" : i + 1}
+              </div>
+              <span className={`text-xs font-medium ${active ? "text-slate-700" : "text-slate-400"}`}>{label}</span>
+            </div>
+            {!isLast && (
+              <div className={`mx-2 mb-5 h-0.5 flex-1 rounded transition-colors ${i < currentStep ? "bg-indigo-600" : "bg-slate-100"}`} />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function OutcomeCard({ tone, title, body }: { tone: "success" | "danger"; title: string; body: string }) {
+  const styles =
+    tone === "success"
+      ? "border-green-200 bg-green-50 text-green-800"
+      : "border-red-200 bg-red-50 text-red-800";
+  return (
+    <div className={`rounded-xl border p-6 shadow-sm ${styles}`}>
+      <h2 className="font-semibold">{title}</h2>
+      <p className="mt-1 text-sm opacity-90">{body}</p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Officer-only components
+// ---------------------------------------------------------------------------
 
 function SummaryCards({ application }: { application: Application }) {
   const cards = [
@@ -121,11 +244,11 @@ function SummaryCards({ application }: { application: Application }) {
     { label: "Tamper Flag", value: application.isTampered === null ? "-" : application.isTampered ? "Flagged" : "Clean" },
   ];
   return (
-    <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+    <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
       {cards.map((c) => (
-        <div key={c.label} className="bg-white border border-slate-200 rounded-lg p-4">
-          <p className="text-xs text-slate-500">{c.label}</p>
-          <p className="text-lg font-semibold mt-1">{c.value}</p>
+        <div key={c.label} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition-shadow hover:shadow-md">
+          <p className="text-xs font-medium uppercase tracking-wide text-slate-400">{c.label}</p>
+          <p className="mt-1.5 text-lg font-semibold text-slate-900">{c.value}</p>
         </div>
       ))}
     </div>
@@ -154,19 +277,24 @@ function UploadWidget({ applicationId, onUploaded }: { applicationId: number; on
   }
 
   return (
-    <div className="bg-white border border-slate-200 rounded-lg p-6">
-      <h2 className="font-medium mb-4">Upload a supporting document</h2>
+    <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+      <h2 className="mb-1 font-semibold text-slate-900">Upload a supporting document</h2>
+      <p className="mb-4 text-sm text-slate-500">We will review your bank statement and get back to you shortly.</p>
       <form onSubmit={onSubmit} className="flex flex-wrap items-end gap-3">
         <div>
-          <label className="block text-xs text-slate-500 mb-1">Document type</label>
-          <select value={docType} onChange={(e) => setDocType(e.target.value)} className="border border-slate-300 rounded px-3 py-2 text-sm">
+          <label className="mb-1 block text-xs font-medium text-slate-500">Document type</label>
+          <select
+            value={docType}
+            onChange={(e) => setDocType(e.target.value)}
+            className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+          >
             <option value="BANK_STATEMENT">Bank Statement</option>
             <option value="PAYSLIP">Payslip</option>
             <option value="TAX_RETURN">Tax Return</option>
           </select>
         </div>
         <div>
-          <label className="block text-xs text-slate-500 mb-1">File (PDF, JPG, PNG)</label>
+          <label className="mb-1 block text-xs font-medium text-slate-500">File (PDF, JPG, PNG)</label>
           <input
             type="file"
             accept=".pdf,.jpg,.jpeg,.png"
@@ -177,12 +305,12 @@ function UploadWidget({ applicationId, onUploaded }: { applicationId: number; on
         <button
           type="submit"
           disabled={!file || busy}
-          className="bg-blue-600 text-white rounded px-4 py-2 text-sm font-medium disabled:opacity-50"
+          className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700 disabled:opacity-50"
         >
-          {busy ? "Analyzing (this runs forensics + risk scoring)..." : "Upload & Analyze"}
+          {busy ? "Analyzing..." : "Upload & Submit"}
         </button>
       </form>
-      {error && <p className="text-sm text-red-600 mt-2">{error}</p>}
+      {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
     </div>
   );
 }
@@ -203,14 +331,14 @@ function SplitScreenViewer({
   const isPdf = activeDoc.mimeType === "application/pdf";
 
   return (
-    <div className="bg-white border border-slate-200 rounded-lg p-4">
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="font-medium">Underwriter Workspace: Original vs. ELA Tamper Heatmap</h2>
+    <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="font-semibold text-slate-900">Underwriter Workspace: Original vs. ELA Tamper Heatmap</h2>
         {documents.length > 1 && (
           <select
             value={activeDoc.id}
             onChange={(e) => onSelect(Number(e.target.value))}
-            className="border border-slate-300 rounded px-2 py-1 text-xs"
+            className="rounded-lg border border-slate-300 px-2 py-1 text-xs"
           >
             {documents.map((d) => (
               <option key={d.id} value={d.id}>
@@ -220,19 +348,19 @@ function SplitScreenViewer({
           </select>
         )}
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <div>
-          <p className="text-xs text-slate-500 mb-1">Original document</p>
+          <p className="mb-1 text-xs text-slate-500">Original document</p>
           {isPdf ? (
-            <iframe src={fileUrl} className="w-full h-[480px] border border-slate-200 rounded" />
+            <iframe src={fileUrl} className="h-[480px] w-full rounded-lg border border-slate-200" />
           ) : (
-            <img src={fileUrl} alt="Original document" className="w-full border border-slate-200 rounded" />
+            <img src={fileUrl} alt="Original document" className="w-full rounded-lg border border-slate-200" />
           )}
         </div>
         <div>
-          <p className="text-xs text-slate-500 mb-1">Error Level Analysis heatmap (brighter = higher recompression error)</p>
+          <p className="mb-1 text-xs text-slate-500">Error Level Analysis heatmap (brighter = higher recompression error)</p>
           {activeDoc.elaHeatmapBase64 ? (
-            <img src={activeDoc.elaHeatmapBase64} alt="ELA heatmap" className="w-full border border-slate-200 rounded bg-black" />
+            <img src={activeDoc.elaHeatmapBase64} alt="ELA heatmap" className="w-full rounded-lg border border-slate-200 bg-black" />
           ) : (
             <p className="text-sm text-slate-400">No heatmap available</p>
           )}
@@ -245,33 +373,33 @@ function SplitScreenViewer({
 function LedgerTable({ items }: { items: LedgerLineItem[] }) {
   if (items.length === 0) return null;
   return (
-    <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-      <div className="px-4 py-3 border-b border-slate-100">
-        <h2 className="font-medium">Ledger Reconciliation</h2>
+    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      <div className="border-b border-slate-100 px-5 py-3.5">
+        <h2 className="font-semibold text-slate-900">Ledger Reconciliation</h2>
         <p className="text-xs text-slate-500">
           Expected balance = previous balance + credit - debit. Rows in red failed this check.
         </p>
       </div>
       <table className="w-full text-sm">
-        <thead className="bg-slate-50 text-slate-500 text-xs uppercase">
+        <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
           <tr>
-            <th className="text-left px-4 py-2">Date</th>
-            <th className="text-left px-4 py-2">Description</th>
-            <th className="text-right px-4 py-2">Credit</th>
-            <th className="text-right px-4 py-2">Debit</th>
-            <th className="text-right px-4 py-2">Balance</th>
-            <th className="text-right px-4 py-2">Expected</th>
+            <th className="px-5 py-2.5 text-left">Date</th>
+            <th className="px-5 py-2.5 text-left">Description</th>
+            <th className="px-5 py-2.5 text-right">Credit</th>
+            <th className="px-5 py-2.5 text-right">Debit</th>
+            <th className="px-5 py-2.5 text-right">Balance</th>
+            <th className="px-5 py-2.5 text-right">Expected</th>
           </tr>
         </thead>
         <tbody>
           {items.map((li) => (
             <tr key={li.id} className={`border-t border-slate-100 ${li.isMathDrift ? "bg-red-50" : ""}`}>
-              <td className="px-4 py-2">{li.txnDate}</td>
-              <td className="px-4 py-2">{li.description}</td>
-              <td className="px-4 py-2 text-right">{li.credit ? li.credit.toLocaleString() : "-"}</td>
-              <td className="px-4 py-2 text-right">{li.debit ? li.debit.toLocaleString() : "-"}</td>
-              <td className="px-4 py-2 text-right font-medium">{li.balance.toLocaleString()}</td>
-              <td className={`px-4 py-2 text-right ${li.isMathDrift ? "text-red-600 font-semibold" : "text-slate-400"}`}>
+              <td className="px-5 py-2.5">{li.txnDate}</td>
+              <td className="px-5 py-2.5">{li.description}</td>
+              <td className="px-5 py-2.5 text-right">{li.credit ? li.credit.toLocaleString() : "-"}</td>
+              <td className="px-5 py-2.5 text-right">{li.debit ? li.debit.toLocaleString() : "-"}</td>
+              <td className="px-5 py-2.5 text-right font-medium">{li.balance.toLocaleString()}</td>
+              <td className={`px-5 py-2.5 text-right ${li.isMathDrift ? "font-semibold text-red-600" : "text-slate-400"}`}>
                 {li.expectedBalance.toLocaleString()}
               </td>
             </tr>
@@ -311,46 +439,46 @@ function DecisionPanel({
 
   if (status === "PENDING" || status === "PROCESSING") {
     return (
-      <div className="bg-white border border-slate-200 rounded-lg p-4 text-sm text-slate-500">
+      <div className="rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-500 shadow-sm">
         Waiting for the applicant to upload documents before a review can happen.
       </div>
     );
   }
 
   return (
-    <div className="bg-white border border-slate-200 rounded-lg p-4">
-      <h2 className="font-medium mb-3">Underwriter Decision</h2>
+    <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <h2 className="mb-3 font-semibold text-slate-900">Underwriter Decision</h2>
       <textarea
         value={notes}
         onChange={(e) => setNotes(e.target.value)}
         placeholder="Notes for the audit trail (optional)"
-        className="w-full border border-slate-300 rounded px-3 py-2 text-sm mb-3"
+        className="mb-3 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
         rows={2}
       />
       <div className="flex gap-2">
         <button
           onClick={() => decide("APPROVE")}
           disabled={busy}
-          className="bg-green-600 text-white rounded px-4 py-2 text-sm font-medium disabled:opacity-50"
+          className="rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-green-700 disabled:opacity-50"
         >
           Approve
         </button>
         <button
           onClick={() => decide("OVERRIDE")}
           disabled={busy}
-          className="bg-amber-600 text-white rounded px-4 py-2 text-sm font-medium disabled:opacity-50"
+          className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-amber-600 disabled:opacity-50"
         >
           Override &amp; Approve
         </button>
         <button
           onClick={() => decide("MANUAL_REJECT")}
           disabled={busy}
-          className="bg-red-600 text-white rounded px-4 py-2 text-sm font-medium disabled:opacity-50"
+          className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
         >
           Reject
         </button>
       </div>
-      {error && <p className="text-sm text-red-600 mt-2">{error}</p>}
+      {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
     </div>
   );
 }
@@ -358,18 +486,18 @@ function DecisionPanel({
 function AuditTrail({ logs }: { logs: AuditLog[] }) {
   if (logs.length === 0) return null;
   return (
-    <div className="bg-white border border-slate-200 rounded-lg p-4">
-      <h2 className="font-medium mb-3">Audit Trail (WORM log)</h2>
-      <ul className="space-y-2 text-sm">
+    <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <h2 className="mb-3 font-semibold text-slate-900">Audit Trail (WORM log)</h2>
+      <ul className="space-y-3 text-sm">
         {logs.map((log) => (
           <li key={log.id} className="border-l-2 border-slate-200 pl-3">
             <p>
-              <span className="font-medium">{log.actionTaken.replace(/_/g, " ")}</span>
+              <span className="font-medium text-slate-800">{log.actionTaken.replace(/_/g, " ")}</span>
               {log.reviewerName ? ` by ${log.reviewerName}` : " (system)"}
               <span className="text-slate-400"> · {log.timestamp}</span>
             </p>
             {log.notes && <p className="text-slate-500">{log.notes}</p>}
-            <p className="text-slate-300 text-xs font-mono">evidence sha256: {log.evidenceHash.slice(0, 24)}...</p>
+            <p className="font-mono text-xs text-slate-300">evidence sha256: {log.evidenceHash.slice(0, 24)}...</p>
           </li>
         ))}
       </ul>
