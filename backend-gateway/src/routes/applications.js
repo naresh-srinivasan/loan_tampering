@@ -160,6 +160,13 @@ router.post("/:id/documents", requireRole("APPL"), upload.single("file"), async 
     const isMathConsistent = financialAnalysis ? financialAnalysis.isMathConsistent : true;
     const verifiedMonthlyIncome = financialAnalysis?.totalMonthlyCredits || app.statedMonthlyIncome;
 
+    const anomalies = [...(forensicResult.anomaliesDetected || [])];
+    if (financialAnalysis?.extractionFailed) {
+      anomalies.push(
+        "No transaction table could be extracted from this document - ledger math could not be verified. Flagged for manual review rather than auto-approved."
+      );
+    }
+
     const scoreResult = await scoreApplicant({
       age: app.age,
       statedMonthlyIncome: app.statedMonthlyIncome,
@@ -187,8 +194,8 @@ router.post("/:id/documents", requireRole("APPL"), upload.single("file"), async 
     ).run(
       forensicResult.isTampered ? 1 : 0,
       forensicResult.tamperConfidence,
-      JSON.stringify(forensicResult.anomaliesDetected || []),
-      isMathConsistent ? 1 : 0,
+      JSON.stringify(anomalies),
+      isMathConsistent === null ? null : (isMathConsistent ? 1 : 0),
       financialAnalysis?.openingBalance ?? null,
       financialAnalysis?.closingBalance ?? null,
       financialAnalysis?.averageMonthlyBalance ?? null,

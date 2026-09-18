@@ -40,7 +40,7 @@ class ScoreRequest(BaseModel):
     numPastDue90Plus: int = 0
     verifiedMonthlyIncome: float | None = None
     isTampered: bool = False
-    isMathConsistent: bool = True
+    isMathConsistent: bool | None = True  # None = ledger extraction failed, unverifiable
 
 
 @app.post("/score")

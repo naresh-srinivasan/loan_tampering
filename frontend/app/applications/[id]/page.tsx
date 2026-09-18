@@ -107,7 +107,17 @@ function SummaryCards({ application }: { application: Application }) {
     { label: "Debt-to-Income", value: application.calculatedDTI != null ? `${(application.calculatedDTI * 100).toFixed(1)}%` : "-" },
     { label: "Avg. Monthly Balance", value: application.averageMonthlyBalance != null ? `₹${application.averageMonthlyBalance.toLocaleString()}` : "-" },
     { label: "Verified Monthly Income", value: application.verifiedMonthlyIncome != null ? `₹${application.verifiedMonthlyIncome.toLocaleString()}` : "-" },
-    { label: "Math Consistent", value: application.isMathConsistent === null ? "-" : application.isMathConsistent ? "Yes" : "No, drift detected" },
+    {
+      label: "Math Consistent",
+      value:
+        application.isMathConsistent === null
+          ? application.creditScore != null
+            ? "Could not verify - no ledger extracted"
+            : "-"
+          : application.isMathConsistent
+          ? "Yes"
+          : "No, drift detected",
+    },
     { label: "Tamper Flag", value: application.isTampered === null ? "-" : application.isTampered ? "Flagged" : "Clean" },
   ];
   return (

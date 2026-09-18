@@ -75,8 +75,11 @@ def score_applicant(
     }
 
 
-def route_decision(is_tampered: bool, is_math_consistent: bool, credit_score: int) -> str:
-    """Deterministic tri-state underwriting decision framework (Figure/Table in report)."""
+def route_decision(is_tampered: bool, is_math_consistent: bool | None, credit_score: int) -> str:
+    """Deterministic tri-state underwriting decision framework (Figure/Table in report).
+    is_math_consistent=None means ledger extraction failed (unverifiable) and is
+    treated the same as a failed check: `not None` is True, so this also routes
+    to MANUAL_REVIEW rather than being auto-approved."""
     if is_tampered:
         return "REJECT_FRAUD_ALERT"
     if not is_math_consistent:

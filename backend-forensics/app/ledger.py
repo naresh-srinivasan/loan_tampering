@@ -9,7 +9,9 @@ Reconciliation uses exact Decimal arithmetic:
 A row is flagged isMathDrift if |Balance_i - Expected_Balance_i| > 0.01.
 """
 import io
+import os
 import re
+import shutil
 from decimal import Decimal, InvalidOperation
 from datetime import datetime
 
@@ -19,6 +21,16 @@ import numpy as np
 import pdfplumber
 import pytesseract
 from PIL import Image
+
+# On Windows, installing Tesseract doesn't reliably put it on PATH. Respect an
+# explicit override (TESSERACT_CMD env var), then fall back to the default
+# install location of the common UB-Mannheim Windows build, before relying on
+# PATH lookup.
+_DEFAULT_WINDOWS_TESSERACT = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+if os.environ.get("TESSERACT_CMD"):
+    pytesseract.pytesseract.tesseract_cmd = os.environ["TESSERACT_CMD"]
+elif not shutil.which("tesseract") and os.path.exists(_DEFAULT_WINDOWS_TESSERACT):
+    pytesseract.pytesseract.tesseract_cmd = _DEFAULT_WINDOWS_TESSERACT
 
 DATE_PATTERN = r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2})"
 NUMBER_PATTERN = r"-?[\d,]+\.\d{2}"
@@ -241,9 +253,15 @@ def extract_ledger(file_bytes: bytes, filename: str) -> tuple[list[dict], str]:
 def reconcile_ledger(rows: list[dict]) -> dict:
     """Sequential balance audit per Algorithm 2 in the report."""
     if not rows:
+        # No transaction rows could be extracted - this is NOT the same thing as
+        # "the ledger is consistent". Reporting isMathConsistent=True here would
+        # silently pass a document nobody actually checked, which is worse than
+        # any false positive. isMathConsistent=None means "unverifiable" and the
+        # gateway/frontend route this to manual review rather than auto-approving.
         return {
             "lineItems": [],
-            "isMathConsistent": True,
+            "isMathConsistent": None,
+            "extractionFailed": True,
             "openingBalance": 0.0,
             "closingBalance": 0.0,
             "averageMonthlyBalance": 0.0,
@@ -289,6 +307,7 @@ def reconcile_ledger(rows: list[dict]) -> dict:
     return {
         "lineItems": line_items,
         "isMathConsistent": drift_count == 0,
+        "extractionFailed": False,
         "openingBalance": float(rows[0]["balance"]),
         "closingBalance": float(rows[-1]["balance"]),
         "averageMonthlyBalance": round(amb, 2),

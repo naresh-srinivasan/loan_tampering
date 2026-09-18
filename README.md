@@ -33,10 +33,17 @@ deterministic, zero-false-positive signals used to drive routing automatically.
 
 - Node.js 18+
 - Python 3.10+ with `venv`
-- Tesseract OCR (`apt install tesseract-ocr` / `brew install tesseract`)
+- Tesseract OCR:
+  - macOS/Linux: `brew install tesseract` / `apt install tesseract-ocr`
+  - Windows: install from https://github.com/UB-Mannheim/tesseract/wiki, then **restart
+    your terminal** (PATH changes don't apply to already-open ones). The forensics
+    service also auto-detects the default Windows install path
+    (`C:\Program Files\Tesseract-OCR\tesseract.exe`) even if it's not on PATH, or you
+    can set it explicitly with the `TESSERACT_CMD` environment variable.
 
 ## First-time setup
 
+macOS/Linux:
 ```bash
 # 1. Forensics service
 cd backend-forensics
@@ -54,8 +61,27 @@ cd ../frontend
 npm install
 ```
 
+Windows (cmd/PowerShell) — same steps, but venv executables live under `.venv\Scripts\`:
+```bat
+cd backend-forensics
+python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\pip install reportlab
+.venv\Scripts\python train_model.py
+
+cd ..\backend-gateway
+npm install
+
+cd ..\frontend
+npm install
+```
+Note: a Python venv hard-codes absolute paths on Windows, so it breaks if you move/copy
+the project folder after creating it. If you relocate the project, delete `.venv` and
+recreate it (`python -m venv .venv`) from its new location.
+
 ## Running (3 terminals)
 
+macOS/Linux:
 ```bash
 # Terminal 1
 cd backend-forensics && .venv/bin/uvicorn app.main:app --port 8001
@@ -65,6 +91,18 @@ cd backend-gateway && npm start        # http://localhost:4000
 
 # Terminal 3
 cd frontend && npm run dev             # http://localhost:3000
+```
+
+Windows:
+```bat
+:: Terminal 1
+cd backend-forensics && .venv\Scripts\uvicorn app.main:app --port 8001
+
+:: Terminal 2
+cd backend-gateway && npm start
+
+:: Terminal 3
+cd frontend && npm run dev
 ```
 
 Open http://localhost:3000, register as either an **Applicant** or a **Loan Officer**,
@@ -103,3 +141,11 @@ node scripts/smoke-applicant.js   # register, create application, upload, see re
   it demonstrates the ML risk-scoring layer end-to-end but its scores are illustrative,
   not production-calibrated.
 - No RBAC beyond Applicant/Officer self-registration (no separate Admin onboarding flow).
+- **Ledger extraction is tuned for the 3 sample documents, not arbitrary real bank
+  statements.** Digital PDFs with an embedded text table go through `pdfplumber` (fairly
+  general). Scanned/image statements go through custom OpenCV grid-detection, which
+  looks for visible cell borders - most real statements don't draw a full grid, so this
+  will often find nothing. When it does, the app does NOT silently report the ledger as
+  "consistent" - it sets `isMathConsistent: null` / `extractionFailed: true`, adds a
+  visible anomaly note, and routes the application to `MANUAL_REVIEW` instead of
+  auto-approving. Forensics (metadata + ELA) and risk scoring still run regardless.
