@@ -123,11 +123,13 @@ exercise all three underwriting outcomes:
 ## Password-protected PDFs
 
 Real bank statements downloaded from net-banking portals are very often encrypted
-(commonly with the account number, DOB or PAN as the password). Uploading one prompts
-for a password inline (both in the combined apply-and-upload form and the detail page's
-retry uploader) rather than failing outright. The password is used once for that request
-only - it is never written to disk, the database, or a log line. To test this path,
-encrypt any sample PDF, e.g.:
+(commonly with the account number, DOB or PAN as the password). The apply form has an
+optional password field upfront; if it's left blank and the document turns out to be
+encrypted, the application's status becomes `PASSWORD_REQUIRED` once background analysis
+reaches it, and the detail page's upload widget reappears with a password prompt so the
+applicant can re-upload with the correct one - never failing the submission outright. The
+password is used once for that request only - it is never written to disk, the database,
+or a log line. To test this path, encrypt any sample PDF, e.g.:
 
 ```bash
 .venv/bin/python -c "
@@ -151,8 +153,11 @@ node scripts/smoke-applicant.js   # register, create application, upload, see re
 
 ## Notes on scope (prototype, single local user)
 
-- SQLite instead of MySQL; no separate message queue - the gateway calls the Python
-  service synchronously and stores the result.
+- SQLite instead of MySQL; no separate message queue - a document upload is acknowledged
+  immediately (status `PROCESSING`) and the gateway calls the Python service in the
+  background, storing the result when it completes. The frontend polls while an
+  application is mid-pipeline, so the applicant/officer views update on their own instead
+  of the submit button blocking until analysis finishes.
 - The XGBoost risk model is trained on the public "Give Me Some Credit" Kaggle dataset
   (income/DTI/delinquency features), not on real underwriting outcomes for this system -
   it demonstrates the ML risk-scoring layer end-to-end but its scores are illustrative,

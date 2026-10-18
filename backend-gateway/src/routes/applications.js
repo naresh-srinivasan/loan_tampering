@@ -29,6 +29,125 @@ function serializeApplication(app) {
   };
 }
 
+// Runs the forensics + ledger + risk-scoring pipeline in the background,
+// after the upload request has already been acknowledged. Never thrown back
+// to a caller - every outcome (success, password issue, service failure) is
+// written to the application row, and the frontend picks it up by polling
+// GET /:id rather than waiting on this request.
+async function processDocumentInBackground(app, fileBuffer, originalName, mimeType, docType, password) {
+  try {
+    const analysis = await analyzeDocument(fileBuffer, originalName, docType, password);
+    const { forensicResult, financialAnalysis } = analysis;
+
+    const storageKey = `${app.id}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+    fs.writeFileSync(path.join(UPLOAD_DIR, storageKey), fileBuffer);
+
+    const docInfo = db
+      .prepare(
+        `INSERT INTO documents (applicationId, docType, fileName, storageKey, mimeType, elaHeatmapBase64)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .run(app.id, docType, originalName, storageKey, mimeType, forensicResult.elaHeatmapBase64 || null);
+
+    if (financialAnalysis) {
+      const insertLine = db.prepare(
+        `INSERT INTO ledger_line_items
+          (applicationId, documentId, txnDate, description, credit, debit, balance, expectedBalance, isMathDrift)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+      const insertMany = db.transaction((items) => {
+        for (const li of items) {
+          insertLine.run(
+            app.id, docInfo.lastInsertRowid, li.txnDate, li.description,
+            li.credit, li.debit, li.balance, li.expectedBalance, li.isMathDrift ? 1 : 0
+          );
+        }
+      });
+      insertMany(financialAnalysis.lineItems || []);
+    }
+
+    const isMathConsistent = financialAnalysis ? financialAnalysis.isMathConsistent : true;
+    const verifiedMonthlyIncome = financialAnalysis?.totalMonthlyCredits || app.statedMonthlyIncome;
+
+    const anomalies = [...(forensicResult.anomaliesDetected || [])];
+    if (financialAnalysis?.extractionFailed) {
+      anomalies.push(
+        "No transaction table could be extracted from this document - ledger math could not be verified. Flagged for manual review rather than auto-approved."
+      );
+    }
+
+    const scoreResult = await scoreApplicant({
+      age: app.age,
+      statedMonthlyIncome: app.statedMonthlyIncome,
+      existingMonthlyDebt: app.existingMonthlyDebt,
+      numDependents: app.numDependents,
+      numOpenCreditLines: app.numOpenCreditLines,
+      numRealEstateLoans: app.numRealEstateLoans,
+      verifiedMonthlyIncome,
+      isTampered: !!forensicResult.isTampered,
+      isMathConsistent,
+    });
+
+    // AUTO_APPROVE is a *recommendation*, not a final decision - a human still
+    // confirms it (as a one-click "Confirm" rather than a full manual review,
+    // since the deterministic checks already passed). Only a fraud/hard-reject
+    // verdict is final without a human, since there's no approval to protect
+    // against there.
+    const newStatus =
+      scoreResult.recommendation === "REJECT" || scoreResult.recommendation === "REJECT_FRAUD_ALERT"
+        ? "REJECTED"
+        : "UNDER_REVIEW";
+
+    db.prepare(
+      `UPDATE applications SET
+        isTampered = ?, tamperConfidence = ?, anomaliesDetected = ?,
+        isMathConsistent = ?, openingBalance = ?, closingBalance = ?, averageMonthlyBalance = ?,
+        verifiedMonthlyIncome = ?, calculatedDTI = ?, creditScore = ?, riskBand = ?,
+        recommendation = ?, status = ?, lastError = NULL, updatedAt = datetime('now')
+       WHERE id = ?`
+    ).run(
+      forensicResult.isTampered ? 1 : 0,
+      forensicResult.tamperConfidence,
+      JSON.stringify(anomalies),
+      isMathConsistent === null ? null : (isMathConsistent ? 1 : 0),
+      financialAnalysis?.openingBalance ?? null,
+      financialAnalysis?.closingBalance ?? null,
+      financialAnalysis?.averageMonthlyBalance ?? null,
+      scoreResult.verifiedMonthlyIncome,
+      scoreResult.calculatedDTI,
+      scoreResult.creditScore,
+      scoreResult.riskBand,
+      scoreResult.recommendation,
+      newStatus,
+      app.id
+    );
+
+    const evidenceHash = crypto
+      .createHash("sha256")
+      .update(JSON.stringify({ forensicResult, financialAnalysis, scoreResult }))
+      .digest("hex");
+    db.prepare(
+      `INSERT INTO audit_logs (applicationId, reviewedBy, actionTaken, evidenceHash, notes)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run(app.id, null, "AUTOMATED_ANALYSIS", evidenceHash, `System recommendation: ${scoreResult.recommendation}`);
+  } catch (err) {
+    if (err.code === "password_required" || err.code === "invalid_password") {
+      // Expected, actionable state - not an error to log. The password itself
+      // is never written anywhere (not the DB, not this log line). No document
+      // row was created, so the applicant's upload widget reappears and they
+      // can retry with the correct password.
+      db.prepare(
+        "UPDATE applications SET status = 'PASSWORD_REQUIRED', lastError = ?, updatedAt = datetime('now') WHERE id = ?"
+      ).run(err.code, app.id);
+      return;
+    }
+    console.error(err);
+    db.prepare(
+      "UPDATE applications SET status = 'ANALYSIS_FAILED', lastError = ?, updatedAt = datetime('now') WHERE id = ?"
+    ).run(err.message || "Forensics/risk pipeline failed", app.id);
+  }
+}
+
 // --- Create application (Applicant) ---------------------------------------
 router.post("/", requireRole("APPL"), (req, res) => {
   const {
@@ -108,8 +227,14 @@ router.get("/:id", (req, res) => {
   });
 });
 
-// --- Upload a document, run forensics + ledger + risk scoring ---------------
-router.post("/:id/documents", requireRole("APPL"), upload.single("file"), async (req, res) => {
+// --- Upload a document: acknowledge immediately, analyze in the background --
+// The applicant gets a fast "submitted" response; forensics + ledger
+// reconciliation + XGBoost scoring (which can take a while) run after the
+// response is sent, and the result shows up when the frontend next polls
+// GET /:id. This also means the previous synchronous password-retry flow is
+// gone - a bad/missing password now surfaces as a PASSWORD_REQUIRED status
+// on the application, which the detail page's upload widget reacts to.
+router.post("/:id/documents", requireRole("APPL"), upload.single("file"), (req, res) => {
   const app = loadApplicationOr404(req, res);
   if (!app) return;
 
@@ -124,116 +249,17 @@ router.post("/:id/documents", requireRole("APPL"), upload.single("file"), async 
     return res.status(400).json({ error: "File failed magic-byte validation (expected PDF/JPEG/PNG)" });
   }
 
-  db.prepare("UPDATE applications SET status = 'PROCESSING', updatedAt = datetime('now') WHERE id = ?").run(app.id);
+  db.prepare(
+    "UPDATE applications SET status = 'PROCESSING', lastError = NULL, updatedAt = datetime('now') WHERE id = ?"
+  ).run(app.id);
 
-  try {
-    const analysis = await analyzeDocument(req.file.buffer, req.file.originalname, docType, password);
-    const { forensicResult, financialAnalysis } = analysis;
+  // Fire-and-forget: deliberately not awaited, so the response below goes out
+  // immediately. processDocumentInBackground never throws - every outcome is
+  // written to the application row instead.
+  processDocumentInBackground(app, req.file.buffer, req.file.originalname, req.file.mimetype, docType, password);
 
-    const storageKey = `${app.id}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
-    fs.writeFileSync(path.join(UPLOAD_DIR, storageKey), req.file.buffer);
-
-    const docInfo = db
-      .prepare(
-        `INSERT INTO documents (applicationId, docType, fileName, storageKey, mimeType, elaHeatmapBase64)
-         VALUES (?, ?, ?, ?, ?, ?)`
-      )
-      .run(app.id, docType, req.file.originalname, storageKey, req.file.mimetype, forensicResult.elaHeatmapBase64 || null);
-
-    if (financialAnalysis) {
-      const insertLine = db.prepare(
-        `INSERT INTO ledger_line_items
-          (applicationId, documentId, txnDate, description, credit, debit, balance, expectedBalance, isMathDrift)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      );
-      const insertMany = db.transaction((items) => {
-        for (const li of items) {
-          insertLine.run(
-            app.id, docInfo.lastInsertRowid, li.txnDate, li.description,
-            li.credit, li.debit, li.balance, li.expectedBalance, li.isMathDrift ? 1 : 0
-          );
-        }
-      });
-      insertMany(financialAnalysis.lineItems || []);
-    }
-
-    const isMathConsistent = financialAnalysis ? financialAnalysis.isMathConsistent : true;
-    const verifiedMonthlyIncome = financialAnalysis?.totalMonthlyCredits || app.statedMonthlyIncome;
-
-    const anomalies = [...(forensicResult.anomaliesDetected || [])];
-    if (financialAnalysis?.extractionFailed) {
-      anomalies.push(
-        "No transaction table could be extracted from this document - ledger math could not be verified. Flagged for manual review rather than auto-approved."
-      );
-    }
-
-    const scoreResult = await scoreApplicant({
-      age: app.age,
-      statedMonthlyIncome: app.statedMonthlyIncome,
-      existingMonthlyDebt: app.existingMonthlyDebt,
-      numDependents: app.numDependents,
-      numOpenCreditLines: app.numOpenCreditLines,
-      numRealEstateLoans: app.numRealEstateLoans,
-      verifiedMonthlyIncome,
-      isTampered: !!forensicResult.isTampered,
-      isMathConsistent,
-    });
-
-    // AUTO_APPROVE is a *recommendation*, not a final decision - a human still
-    // confirms it (as a one-click "Confirm" rather than a full manual review,
-    // since the deterministic checks already passed). Only a fraud/hard-reject
-    // verdict is final without a human, since there's no approval to protect
-    // against there.
-    const newStatus =
-      scoreResult.recommendation === "REJECT" || scoreResult.recommendation === "REJECT_FRAUD_ALERT"
-        ? "REJECTED"
-        : "UNDER_REVIEW";
-
-    db.prepare(
-      `UPDATE applications SET
-        isTampered = ?, tamperConfidence = ?, anomaliesDetected = ?,
-        isMathConsistent = ?, openingBalance = ?, closingBalance = ?, averageMonthlyBalance = ?,
-        verifiedMonthlyIncome = ?, calculatedDTI = ?, creditScore = ?, riskBand = ?,
-        recommendation = ?, status = ?, updatedAt = datetime('now')
-       WHERE id = ?`
-    ).run(
-      forensicResult.isTampered ? 1 : 0,
-      forensicResult.tamperConfidence,
-      JSON.stringify(anomalies),
-      isMathConsistent === null ? null : (isMathConsistent ? 1 : 0),
-      financialAnalysis?.openingBalance ?? null,
-      financialAnalysis?.closingBalance ?? null,
-      financialAnalysis?.averageMonthlyBalance ?? null,
-      scoreResult.verifiedMonthlyIncome,
-      scoreResult.calculatedDTI,
-      scoreResult.creditScore,
-      scoreResult.riskBand,
-      scoreResult.recommendation,
-      newStatus,
-      app.id
-    );
-
-    const evidenceHash = crypto
-      .createHash("sha256")
-      .update(JSON.stringify({ forensicResult, financialAnalysis, scoreResult }))
-      .digest("hex");
-    db.prepare(
-      `INSERT INTO audit_logs (applicationId, reviewedBy, actionTaken, evidenceHash, notes)
-       VALUES (?, ?, ?, ?, ?)`
-    ).run(app.id, null, "AUTOMATED_ANALYSIS", evidenceHash, `System recommendation: ${scoreResult.recommendation}`);
-
-    const updated = db.prepare("SELECT * FROM applications WHERE id = ?").get(app.id);
-    res.status(201).json({ application: serializeApplication(updated), forensicResult, financialAnalysis, scoreResult });
-  } catch (err) {
-    db.prepare("UPDATE applications SET status = 'PENDING', updatedAt = datetime('now') WHERE id = ?").run(app.id);
-    if (err.code === "password_required" || err.code === "invalid_password") {
-      // Expected, actionable state - not an error to log. The password itself
-      // is never written anywhere (not the DB, not this log line).
-      return res.status(422).json({ error: err.code });
-    }
-    console.error(err);
-    res.status(502).json({ error: "Forensics/risk pipeline failed", detail: err.message });
-  }
+  const updated = db.prepare("SELECT * FROM applications WHERE id = ?").get(app.id);
+  res.status(202).json({ application: serializeApplication(updated) });
 });
 
 // --- Serve the original uploaded document (for the split-screen viewer) ----

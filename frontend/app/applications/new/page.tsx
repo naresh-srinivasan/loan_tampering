@@ -4,6 +4,13 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 
+// Submission is now two fast, sequential calls (create application, upload
+// document) - the gateway acknowledges the upload immediately and runs
+// forensics/scoring in the background, so this page redirects to the new
+// application's own page right away instead of waiting for analysis to
+// finish. That page polls and shows the live status (including a
+// password-retry prompt if the document turns out to be encrypted) once
+// results start coming in.
 export default function NewApplicationPage() {
   const router = useRouter();
   const [form, setForm] = useState({
@@ -18,31 +25,11 @@ export default function NewApplicationPage() {
   const [docType, setDocType] = useState("BANK_STATEMENT");
   const [file, setFile] = useState<File | null>(null);
   const [pdfPassword, setPdfPassword] = useState("");
-  const [needsPassword, setNeedsPassword] = useState<"required" | "invalid" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  // Once the application record exists, retrying with a password re-uses it
-  // rather than creating a duplicate application on every attempt.
-  const [createdApplicationId, setCreatedApplicationId] = useState<number | null>(null);
 
   function set(field: string) {
     return (e: React.ChangeEvent<HTMLInputElement>) => setForm((f) => ({ ...f, [field]: e.target.value }));
-  }
-
-  async function tryUpload(applicationId: number) {
-    try {
-      await api.uploadDocument(applicationId, docType, file as File, pdfPassword || undefined);
-      router.push("/applications?submitted=1");
-    } catch (err) {
-      const code = (err as { code?: string }).code;
-      if (code === "password_required" || code === "invalid_password") {
-        setNeedsPassword(code === "invalid_password" ? "invalid" : "required");
-        return;
-      }
-      // Some other failure (service down, bad file, etc.) - the application
-      // record already exists, so send them to its page rather than losing it.
-      router.push(`/applications/${applicationId}`);
-    }
   }
 
   async function onSubmit(e: React.FormEvent) {
@@ -54,25 +41,25 @@ export default function NewApplicationPage() {
     setError(null);
     setSubmitting(true);
     try {
-      if (createdApplicationId) {
-        // Retrying after a password prompt - the application already exists.
-        await tryUpload(createdApplicationId);
-      } else {
-        const { application } = await api.createApplication({
-          loanAmount: Number(form.loanAmount),
-          tenureMonths: Number(form.tenureMonths),
-          loanPurpose: form.loanPurpose,
-          age: Number(form.age),
-          statedMonthlyIncome: Number(form.statedMonthlyIncome),
-          existingMonthlyDebt: Number(form.existingMonthlyDebt || 0),
-          numDependents: Number(form.numDependents || 0),
-        });
-        setCreatedApplicationId(application.id);
-        await tryUpload(application.id);
+      const { application } = await api.createApplication({
+        loanAmount: Number(form.loanAmount),
+        tenureMonths: Number(form.tenureMonths),
+        loanPurpose: form.loanPurpose,
+        age: Number(form.age),
+        statedMonthlyIncome: Number(form.statedMonthlyIncome),
+        existingMonthlyDebt: Number(form.existingMonthlyDebt || 0),
+        numDependents: Number(form.numDependents || 0),
+      });
+      try {
+        await api.uploadDocument(application.id, docType, file, pdfPassword || undefined);
+      } catch {
+        // The application record already exists - send them to its page
+        // rather than losing it, even if this particular upload attempt
+        // failed fast validation (e.g. bad file type).
       }
+      router.push(`/applications/${application.id}?submitted=1`);
     } catch (err) {
       setError((err as Error).message);
-    } finally {
       setSubmitting(false);
     }
   }
@@ -88,7 +75,7 @@ export default function NewApplicationPage() {
       </p>
       <div className="rounded-xl border border-slate-200 bg-white p-8 shadow-sm">
         <form onSubmit={onSubmit} className="space-y-4">
-          <fieldset disabled={!!createdApplicationId} className="space-y-4 disabled:opacity-60">
+          <fieldset disabled={submitting} className="space-y-4 disabled:opacity-60">
             <Field label="Loan amount requested (₹)">
               <input type="number" required min={1} value={form.loanAmount} onChange={set("loanAmount")} className={inputClass} />
             </Field>
@@ -117,7 +104,7 @@ export default function NewApplicationPage() {
               <select
                 value={docType}
                 onChange={(e) => setDocType(e.target.value)}
-                disabled={!!createdApplicationId}
+                disabled={submitting}
                 className={inputClass}
               >
                 <option value="BANK_STATEMENT">Bank Statement</option>
@@ -130,34 +117,29 @@ export default function NewApplicationPage() {
               <input
                 type="file"
                 required
-                disabled={!!createdApplicationId}
+                disabled={submitting}
                 accept=".pdf,.jpg,.jpeg,.png"
                 onChange={(e) => setFile(e.target.files?.[0] || null)}
                 className="text-sm"
               />
             </div>
-
-            {needsPassword && (
-              <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4">
-                <p className="text-sm font-medium text-amber-800">
-                  {needsPassword === "invalid"
-                    ? "That password didn't work - try again."
-                    : "This document is password protected."}
-                </p>
-                <p className="mt-1 text-xs text-amber-700">
-                  Many bank statements are encrypted (e.g. with your account number or date of birth). Enter the
-                  password to unlock it - it is used once for this upload and is not stored.
-                </p>
-                <input
-                  type="password"
-                  autoFocus
-                  value={pdfPassword}
-                  onChange={(e) => setPdfPassword(e.target.value)}
-                  placeholder="Document password"
-                  className="mt-2 w-full rounded-lg border border-amber-300 px-3 py-2 text-sm focus:border-amber-500 focus:outline-none focus:ring-1 focus:ring-amber-500"
-                />
-              </div>
-            )}
+            <div className="mt-4">
+              <label className="mb-1 block text-sm font-medium text-slate-600">
+                Document password <span className="font-normal text-slate-400">(only if it&apos;s encrypted)</span>
+              </label>
+              <input
+                type="password"
+                disabled={submitting}
+                value={pdfPassword}
+                onChange={(e) => setPdfPassword(e.target.value)}
+                placeholder="Leave blank if not password protected"
+                className={inputClass}
+              />
+              <p className="mt-1 text-xs text-slate-400">
+                If you skip this and the document turns out to be encrypted, we&apos;ll ask for the password on the
+                next page instead of losing your application.
+              </p>
+            </div>
           </div>
 
           {error && <p className="text-sm text-red-600">{error}</p>}
@@ -167,7 +149,7 @@ export default function NewApplicationPage() {
             disabled={submitting}
             className="w-full rounded-lg bg-indigo-600 py-2.5 font-medium text-white transition-colors hover:bg-indigo-700 disabled:opacity-50"
           >
-            {submitting ? "Submitting..." : needsPassword ? "Unlock & Submit" : "Submit Application"}
+            {submitting ? "Submitting..." : "Submit Application"}
           </button>
         </form>
       </div>

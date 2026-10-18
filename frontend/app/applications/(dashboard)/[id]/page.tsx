@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { Suspense, useCallback, useEffect, useState } from "react";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 import { api, Application, DocumentRecord, LedgerLineItem, AuditLog, fileUrlWithAuth } from "@/lib/api";
 import { StatusBadge, RecommendationBadge, RiskBadge } from "@/components/badges";
@@ -42,6 +42,18 @@ export default function ApplicationDetailPage() {
     refresh();
   }, [loading, user, router, refresh]);
 
+  // While the application hasn't reached a final outcome, poll for updates
+  // instead of making the applicant/officer manually refresh - this is what
+  // actually makes "we'll process it and reflect the result in the
+  // dashboard" true, rather than just copy on the page. Stops once a human
+  // decision has been recorded (PRE_APPROVED/REJECTED).
+  useEffect(() => {
+    const status = detail?.application.status;
+    if (!status || status === "PRE_APPROVED" || status === "REJECTED") return;
+    const timer = setInterval(refresh, 2500);
+    return () => clearInterval(timer);
+  }, [detail?.application.status, refresh]);
+
   if (loading || !user) return null;
   if (error) return <p className="text-sm text-red-600">{error}</p>;
   if (!detail) return <p className="text-sm text-slate-500">Loading...</p>;
@@ -50,7 +62,14 @@ export default function ApplicationDetailPage() {
   const isOfficer = user.role === "OFF" || user.role === "ADM";
 
   if (!isOfficer) {
-    return <ApplicantView application={application} documents={documents} onUploaded={refresh} />;
+    return (
+      <div className="space-y-4">
+        <Suspense fallback={null}>
+          <SubmittedBanner />
+        </Suspense>
+        <ApplicantView application={application} documents={documents} onUploaded={refresh} />
+      </div>
+    );
   }
 
   const activeDoc = documents.find((d) => d.id === activeDocId) || documents[0];
@@ -96,6 +115,27 @@ export default function ApplicationDetailPage() {
   );
 }
 
+function SubmittedBanner() {
+  const searchParams = useSearchParams();
+  const [showSubmitted, setShowSubmitted] = useState(false);
+
+  useEffect(() => {
+    if (searchParams.get("submitted") === "1") {
+      setShowSubmitted(true);
+      const timer = setTimeout(() => setShowSubmitted(false), 6000);
+      return () => clearTimeout(timer);
+    }
+  }, [searchParams]);
+
+  if (!showSubmitted) return null;
+  return (
+    <div className="rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-800 shadow-sm">
+      <span className="font-semibold">Application submitted successfully.</span> We&apos;re processing it now - this
+      page will update automatically as results come in.
+    </div>
+  );
+}
+
 function PageHeader({ application, showAnalysisBadges = true }: { application: Application; showAnalysisBadges?: boolean }) {
   return (
     <div className="flex flex-wrap items-start justify-between gap-3">
@@ -128,6 +168,7 @@ function PageHeader({ application, showAnalysisBadges = true }: { application: A
 function applicantStepIndex(status: string): number {
   if (status === "PENDING") return 0;
   if (status === "PROCESSING") return 1;
+  if (status === "PASSWORD_REQUIRED" || status === "ANALYSIS_FAILED") return 1;
   if (status === "UNDER_REVIEW") return 2;
   return 3; // PRE_APPROVED or REJECTED
 }
@@ -141,6 +182,7 @@ function ApplicantView({
   documents: DocumentRecord[];
   onUploaded: () => void;
 }) {
+  const needsAction = application.status === "PASSWORD_REQUIRED" || application.status === "ANALYSIS_FAILED";
   const canUpload = documents.length === 0;
   const currentStep = applicantStepIndex(application.status);
 
@@ -152,9 +194,40 @@ function ApplicantView({
         <ApplicantTimeline currentStep={currentStep} status={application.status} />
       </div>
 
-      {canUpload && <UploadWidget applicationId={application.id} onUploaded={onUploaded} />}
+      {needsAction && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-5 shadow-sm">
+          <h2 className="font-semibold text-amber-800">
+            {application.status === "PASSWORD_REQUIRED" ? "Your document is password protected" : "We couldn't process that document"}
+          </h2>
+          <p className="mt-1 text-sm text-amber-700">
+            {application.status === "PASSWORD_REQUIRED"
+              ? "Enter the document's password below and re-upload to continue."
+              : "Something went wrong while analyzing your document - please try uploading it again."}
+          </p>
+        </div>
+      )}
 
-      {!canUpload && application.status !== "PRE_APPROVED" && application.status !== "REJECTED" && (
+      {canUpload && (
+        <UploadWidget
+          applicationId={application.id}
+          onUploaded={onUploaded}
+          needsPasswordHint={
+            application.status === "PASSWORD_REQUIRED"
+              ? application.lastError === "invalid_password"
+                ? "invalid"
+                : "required"
+              : null
+          }
+        />
+      )}
+
+      {!canUpload && application.status === "PROCESSING" && (
+        <div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-600 shadow-sm">
+          We&apos;re analyzing your document now - this page updates automatically, no need to refresh.
+        </div>
+      )}
+
+      {!canUpload && application.status !== "PRE_APPROVED" && application.status !== "REJECTED" && application.status !== "PROCESSING" && (
         <div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-600 shadow-sm">
           Your document has been submitted and is being reviewed. This page will update automatically
           once a decision is made - check back shortly.
@@ -262,14 +335,31 @@ function SummaryCards({ application }: { application: Application }) {
   );
 }
 
-function UploadWidget({ applicationId, onUploaded }: { applicationId: number; onUploaded: () => void }) {
+function UploadWidget({
+  applicationId,
+  onUploaded,
+  needsPasswordHint = null,
+}: {
+  applicationId: number;
+  onUploaded: () => void;
+  needsPasswordHint?: "required" | "invalid" | null;
+}) {
   const [docType, setDocType] = useState("BANK_STATEMENT");
   const [file, setFile] = useState<File | null>(null);
   const [pdfPassword, setPdfPassword] = useState("");
-  const [needsPassword, setNeedsPassword] = useState<"required" | "invalid" | null>(null);
+  const [needsPassword, setNeedsPassword] = useState<"required" | "invalid" | null>(needsPasswordHint);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  useEffect(() => {
+    setNeedsPassword(needsPasswordHint);
+  }, [needsPasswordHint]);
+
+  // The upload request now only does fast, synchronous validation (file
+  // type, docType) before responding - password checking happens in the
+  // background pipeline, so a bad/missing password shows up as the
+  // application's status flipping to PASSWORD_REQUIRED (passed in as
+  // needsPasswordHint) rather than as a thrown error from this call.
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!file) return;
@@ -279,12 +369,7 @@ function UploadWidget({ applicationId, onUploaded }: { applicationId: number; on
       await api.uploadDocument(applicationId, docType, file, pdfPassword || undefined);
       onUploaded();
     } catch (err) {
-      const code = (err as { code?: string }).code;
-      if (code === "password_required" || code === "invalid_password") {
-        setNeedsPassword(code === "invalid_password" ? "invalid" : "required");
-      } else {
-        setError((err as Error).message);
-      }
+      setError((err as Error).message);
     } finally {
       setBusy(false);
     }
@@ -322,7 +407,7 @@ function UploadWidget({ applicationId, onUploaded }: { applicationId: number; on
             disabled={!file || busy}
             className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700 disabled:opacity-50"
           >
-            {busy ? "Analyzing..." : needsPassword ? "Unlock & Submit" : "Upload & Submit"}
+            {busy ? "Submitting..." : needsPassword ? "Unlock & Submit" : "Upload & Submit"}
           </button>
         </div>
 
@@ -475,10 +560,16 @@ function DecisionPanel({
     }
   }
 
-  if (status === "PENDING" || status === "PROCESSING") {
+  if (status === "PENDING" || status === "PROCESSING" || status === "PASSWORD_REQUIRED" || status === "ANALYSIS_FAILED") {
+    const messages: Record<string, string> = {
+      PENDING: "Waiting for the applicant to upload documents before a review can happen.",
+      PROCESSING: "Document analysis is running in the background - this panel will update automatically once it's done.",
+      PASSWORD_REQUIRED: "The applicant's document is password protected - waiting for them to re-upload with the correct password.",
+      ANALYSIS_FAILED: "Document analysis failed - waiting for the applicant to re-upload.",
+    };
     return (
       <div className="rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-500 shadow-sm">
-        Waiting for the applicant to upload documents before a review can happen.
+        {messages[status]}
       </div>
     );
   }

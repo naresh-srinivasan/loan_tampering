@@ -4,12 +4,14 @@ const STATUS_STYLES: Record<string, string> = {
   UNDER_REVIEW: "bg-amber-100 text-amber-700",
   PRE_APPROVED: "bg-green-100 text-green-700",
   REJECTED: "bg-red-100 text-red-700",
+  PASSWORD_REQUIRED: "bg-orange-100 text-orange-700",
+  ANALYSIS_FAILED: "bg-red-100 text-red-700",
 };
 
 export function StatusBadge({ status }: { status: string }) {
   return (
     <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${STATUS_STYLES[status] || "bg-slate-100 text-slate-600"}`}>
-      {status.replace("_", " ")}
+      {status.replace(/_/g, " ")}
     </span>
   );
 }

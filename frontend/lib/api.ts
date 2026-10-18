@@ -32,6 +32,7 @@ export interface Application {
   riskBand: string | null;
   recommendation: string | null;
   status: string;
+  lastError: string | null;
   createdAt: string;
   updatedAt: string;
 }

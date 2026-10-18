@@ -47,7 +47,8 @@ CREATE TABLE IF NOT EXISTS applications (
   riskBand TEXT,
   recommendation TEXT,
   status TEXT NOT NULL DEFAULT 'PENDING'
-    CHECK(status IN ('PENDING','PROCESSING','UNDER_REVIEW','PRE_APPROVED','REJECTED')),
+    CHECK(status IN ('PENDING','PROCESSING','UNDER_REVIEW','PRE_APPROVED','REJECTED','PASSWORD_REQUIRED','ANALYSIS_FAILED')),
+  lastError TEXT,
   createdAt TEXT NOT NULL DEFAULT (datetime('now')),
   updatedAt TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -86,5 +87,73 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   timestamp TEXT NOT NULL DEFAULT (datetime('now'))
 );
 `);
+
+// --- Migration: older local databases predate the PASSWORD_REQUIRED /
+// ANALYSIS_FAILED statuses and the lastError column added for async
+// background processing. SQLite can't ALTER a CHECK constraint in place,
+// so detect the old schema and rebuild the table, preserving all rows.
+const appsTableSql = db
+  .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'applications'")
+  .get()?.sql;
+if (appsTableSql && !appsTableSql.includes("PASSWORD_REQUIRED")) {
+  // Create the replacement under a temp name and drop+rename at the end,
+  // rather than renaming the live table first - SQLite auto-rewrites other
+  // tables' REFERENCES clauses to follow a renamed table, which would leave
+  // documents/ledger_line_items/audit_logs pointing at the old copy.
+  // Foreign keys must be off for this: with them on, SQLite refuses to drop
+  // a parent table that child rows still reference.
+  db.pragma("foreign_keys = OFF");
+  db.exec(`
+    CREATE TABLE applications_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      applicantId INTEGER NOT NULL REFERENCES users(id),
+      loanAmount REAL NOT NULL,
+      tenureMonths INTEGER NOT NULL,
+      loanPurpose TEXT,
+      age INTEGER,
+      statedMonthlyIncome REAL,
+      existingMonthlyDebt REAL,
+      numDependents INTEGER DEFAULT 0,
+      numOpenCreditLines INTEGER DEFAULT 5,
+      numRealEstateLoans INTEGER DEFAULT 0,
+      isTampered INTEGER,
+      tamperConfidence REAL,
+      anomaliesDetected TEXT,
+      isMathConsistent INTEGER,
+      openingBalance REAL,
+      closingBalance REAL,
+      averageMonthlyBalance REAL,
+      verifiedMonthlyIncome REAL,
+      calculatedDTI REAL,
+      creditScore INTEGER,
+      riskBand TEXT,
+      recommendation TEXT,
+      status TEXT NOT NULL DEFAULT 'PENDING'
+        CHECK(status IN ('PENDING','PROCESSING','UNDER_REVIEW','PRE_APPROVED','REJECTED','PASSWORD_REQUIRED','ANALYSIS_FAILED')),
+      lastError TEXT,
+      createdAt TEXT NOT NULL DEFAULT (datetime('now')),
+      updatedAt TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    INSERT INTO applications_new
+      (id, applicantId, loanAmount, tenureMonths, loanPurpose, age, statedMonthlyIncome,
+       existingMonthlyDebt, numDependents, numOpenCreditLines, numRealEstateLoans,
+       isTampered, tamperConfidence, anomaliesDetected, isMathConsistent,
+       openingBalance, closingBalance, averageMonthlyBalance, verifiedMonthlyIncome,
+       calculatedDTI, creditScore, riskBand, recommendation, status, createdAt, updatedAt)
+    SELECT
+      id, applicantId, loanAmount, tenureMonths, loanPurpose, age, statedMonthlyIncome,
+      existingMonthlyDebt, numDependents, numOpenCreditLines, numRealEstateLoans,
+      isTampered, tamperConfidence, anomaliesDetected, isMathConsistent,
+      openingBalance, closingBalance, averageMonthlyBalance, verifiedMonthlyIncome,
+      calculatedDTI, creditScore, riskBand, recommendation, status, createdAt, updatedAt
+    FROM applications;
+
+    DROP TABLE applications;
+
+    ALTER TABLE applications_new RENAME TO applications;
+  `);
+  db.pragma("foreign_keys = ON");
+}
 
 module.exports = db;
