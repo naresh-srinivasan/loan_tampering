@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth-context";
+import { LogoMark } from "@/components/logo-mark";
 
 export default function RegisterPage() {
   const { register } = useAuth();
@@ -29,9 +30,9 @@ export default function RegisterPage() {
   return (
     <div className="mx-auto mt-16 max-w-sm">
       <div className="mb-6 text-center">
-        <span className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-indigo-600 text-sm font-bold text-white">
-          AI
-        </span>
+        <div className="mb-3 flex justify-center">
+          <LogoMark size={44} />
+        </div>
         <h1 className="text-xl font-semibold text-slate-900">Create an account</h1>
         <p className="mt-1 text-sm text-slate-500">Get started in a few seconds</p>
       </div>
